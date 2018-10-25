@@ -148,10 +148,16 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
             this.sequenceNumber = sequencer.getAndIncrement();
         }
 
+        /**
+         * 得到延时时间
+         */
         public long getDelay(TimeUnit unit) {
             return unit.convert(time - now(), NANOSECONDS);
         }
 
+        /**
+         * 比较任务的延时时间
+         */
         public int compareTo(Delayed other) {
             if (other == this) // compare zero if same object
                 return 0;
@@ -172,6 +178,7 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
         }
 
         /**
+         * 判断是否是周期性任务
          * Returns {@code true} if this is a periodic (not a one-shot) action.
          *
          * @return {@code true} if periodic
@@ -181,6 +188,7 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
         }
 
         /**
+         * 设置周期性任务下一次执行的时间
          * Sets the next time to run for a periodic task.
          */
         private void setNextRunTime() {
@@ -191,6 +199,9 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
                 time = triggerTime(-p);
         }
 
+        /**
+         * 取消任务
+         */
         public boolean cancel(boolean mayInterruptIfRunning) {
             boolean cancelled = super.cancel(mayInterruptIfRunning);
             if (cancelled && removeOnCancel && heapIndex >= 0)
@@ -199,16 +210,23 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
         }
 
         /**
+         * 重写FutureTask，如果是周期性任务需要重新放入队列 
          * Overrides FutureTask version so as to reset/requeue if periodic.
          */
         public void run() {
+            // 判断是否是周期性任务
             boolean periodic = isPeriodic();
+            // 在线程池关闭的情况下能否运行任务
             if (!canRunInCurrentRunState(periodic))
+                // 取消任务
                 cancel(false);
             else if (!periodic)
+                // 不是周期性任务调用父类run
                 ScheduledFutureTask.super.run();
             else if (ScheduledFutureTask.super.runAndReset()) {
+                // 执行runAndReset，并且设置下次任务运行时间
                 setNextRunTime();
+                // 重新放入延迟队列
                 reExecutePeriodic(outerTask);
             }
         }
@@ -237,13 +255,21 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
     * @param task the task
     */
     private void delayedExecute(RunnableScheduledFuture<?> task) {
+        // 判断线程池是否关闭
         if (isShutdown())
+            // 关闭就执行拒绝策略
             reject(task);
         else {
+            // 把任务放投入列队（DelayedWorkQueue）
             super.getQueue().add(task);
+            // canRunInCurrentRunState()判断在线程池关闭的情况下是否继续执行任务
+            // 不继续执行则要从队列移除任务
             if (isShutdown() && !canRunInCurrentRunState(task.isPeriodic()) && remove(task))
+                // 取消任务
                 task.cancel(false);
             else
+                // 保证有一个空闲工作线程，等待任务
+                // 任务此时已经加入队列
                 ensurePrestart();
         }
     }
@@ -903,18 +929,31 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
             final ReentrantLock lock = this.lock;
             lock.lock();
             try {
+                // 查看当前元素数量，如果大于队列长度则进行扩容
                 int i = size;
                 if (i >= queue.length)
                     grow();
+                // 元素数量加1
                 size = i + 1;
+                // 如果当前队列还没有元素，则直接加入头部
                 if (i == 0) {
                     queue[0] = e;
+                    // 记录索引
                     setIndex(e, 0);
                 } else {
+                    // 把任务加入堆中，并调整堆结构，这里就会根据任务的触发时间排列
+                    // 把需要最早执行的任务放在前面
                     siftUp(i, e);
                 }
+                /** 
+                 * 如果新加入的元素就是队列头，分两种情况
+                 * 1、这是提交的第一个任务
+                 * 2、新任务进行堆调整以后，排在队列头
+                 */
                 if (queue[0] == e) {
+                    // 这个变量起优化作用
                     leader = null;
+                    // 加入元素以后，唤醒worker线程
                     available.signal();
                 }
             } finally {
