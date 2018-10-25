@@ -193,9 +193,11 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
          */
         private void setNextRunTime() {
             long p = period;
+            // 大于0是scheduleAtFixedRate方法，表示执行时间是根据初始化参数计算的
             if (p > 0)
                 time += p;
             else
+                // 小于0是scheduleWithFixedDelay方法，表示执行时间是根据当前时间重新计算的
                 time = triggerTime(-p);
         }
 
@@ -216,15 +218,14 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
         public void run() {
             // 判断是否是周期性任务
             boolean periodic = isPeriodic();
-            // 在线程池关闭的情况下能否运行任务
+            // 如果当前线程池已经不支持执行任务，则取消
             if (!canRunInCurrentRunState(periodic))
-                // 取消任务
                 cancel(false);
             else if (!periodic)
                 // 不是周期性任务调用父类run
                 ScheduledFutureTask.super.run();
             else if (ScheduledFutureTask.super.runAndReset()) {
-                // 执行runAndReset，并且设置下次任务运行时间
+                // 如果需要周期执行，则在执行完任务以后，设置下一次执行时间
                 setNextRunTime();
                 // 重新放入延迟队列
                 reExecutePeriodic(outerTask);
@@ -1003,26 +1004,39 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
                 lock.unlock();
             }
         }
-
+        
+        /**
+         *  通过无限for循环获取堆顶的元素，这里take()方法会阻塞当前线程，直至获取到了可执行的任务。
+         *  可以看到，在第一次for循环中，如果堆顶不存在任务，则其会加入阻塞队列中，如果存在任务，但是
+         *  其延迟时间还未到，那么当前线程会等待该延迟时间长的时间，然后查看任务是否可用，当获取到任务
+         *  之后，其会将其从队列中移除，并且唤醒等待队列中其余等待的线程执行下一个任务
+         */
         public RunnableScheduledFuture<?> take() throws InterruptedException {
             final ReentrantLock lock = this.lock;
             lock.lockInterruptibly();
             try {
                 for (;;) {
+                    // 取出队列中第一个元素，即最早需要执行的任务
                     RunnableScheduledFuture<?> first = queue[0];
+                    // 如果队列为空，则阻塞等待加入元素
                     if (first == null)
                         available.await();
                     else {
+                        // 计算任务执行时间，这个delay是当前时间减去任务触发时间
                         long delay = first.getDelay(NANOSECONDS);
+                        // 如果到了触发时间，则执行出队操作
                         if (delay <= 0)
                             return finishPoll(first);
                         first = null; // don't retain ref while waiting
+                        // 这里表示该任务已经分配给了其他线程，当前线程等待唤醒就可以
                         if (leader != null)
                             available.await();
                         else {
+                            // 否则把给任务分配给当前线程
                             Thread thisThread = Thread.currentThread();
                             leader = thisThread;
                             try {
+                                // 当前线程等待任务分配给当前线程
                                 available.awaitNanos(delay);
                             } finally {
                                 if (leader == thisThread)
@@ -1032,6 +1046,7 @@ public class ScheduledThreadPoolExecutor extends ThreadPoolExecutor
                     }
                 }
             } finally {
+                // 如果队列不为空，则唤醒其他worker线程
                 if (leader == null && queue[0] != null)
                     available.signal();
                 lock.unlock();
